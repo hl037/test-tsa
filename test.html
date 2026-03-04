@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Questionnaires Autisme — Tests</title>
+<script src="vue.global.prod.js"></script>
+<script src="questions.js"></script>
+<link rel="stylesheet" href="test.css">
+</head>
+<body>
+
+<div id="app">
+  <header class="app-header">
+    <h1>Questionnaires Autisme</h1>
+    <p>Quotients AQ · EQ · FQ · SQ-R</p>
+  </header>
+
+  <div class="container">
+    <div v-if="!loaded" class="loading">Chargement des questionnaires…</div>
+
+    <template v-else>
+      <div class="toolbar">
+        <button class="tool-btn" @click="saveToFile">&#128190; Sauvegarder</button>
+        <button class="tool-btn" @click="triggerLoad">&#128194; Charger</button>
+        <input type="file" ref="fileInput" class="hidden" accept=".json" @change="loadFromFile">
+        <button class="tool-btn" :class="{active: overviewMode}" @click="overviewMode = !overviewMode">
+          &#128466; {{ overviewMode ? 'Question par question' : 'Vue d\'ensemble' }}
+        </button>
+        <button class="tool-btn accent" @click="showPasswordModal = true">&#128202; Voir les résultats</button>
+      </div>
+
+      <div class="tabs">
+        <button v-for="tid in testIds" :key="tid"
+          class="tab" :class="{active: currentTestId === tid}"
+          @click="switchTest(tid)">
+          {{ tests[tid].shortName }}
+          <span class="badge">{{ answeredCount(tid) }}/{{ tests[tid].questions.length }}</span>
+        </button>
+      </div>
+
+      <!-- Single question mode -->
+      <template v-if="!overviewMode">
+        <div class="progress-wrap">
+          <div class="progress-info">
+            <span>{{ currentDef.title }}</span>
+            <strong>{{ currentIndex + 1 }} / {{ currentDef.questions.length }}</strong>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" :style="{width: progressPct + '%'}"></div>
+          </div>
+        </div>
+
+        <div class="question-card" :key="currentTestId + '-' + currentIndex">
+          <span class="question-number">Question {{ currentIndex + 1 }}</span>
+
+          <div class="question-text" v-if="currentQuestionText">{{ currentQuestionText }}</div>
+
+          <div :class="currentDef.defaultAnswers ? 'answers-grid' : 'answers'">
+            <button v-for="(label, ai) in currentAnswers" :key="ai"
+              class="answer-btn" :class="{selected: currentAnswer === ai}"
+              @click="selectAnswer(ai)">
+              {{ label }}
+            </button>
+          </div>
+
+          <div class="nav-row">
+            <button class="nav-btn prev" :disabled="currentIndex === 0" @click="prevQuestion">&#8592; Précédent</button>
+            <button class="nav-btn next" @click="nextQuestion">
+              {{ currentIndex < currentDef.questions.length - 1 ? 'Suivant \u2192' : 'Terminé \u2713' }}
+            </button>
+          </div>
+
+          <div class="dots">
+            <button v-for="i in currentDef.questions.length" :key="i"
+              class="dot"
+              :class="{answered: allAnswers[currentTestId][i-1] != null, current: currentIndex === i-1}"
+              @click="currentIndex = i - 1"
+              :title="'Question ' + i">
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Overview mode -->
+      <div v-else class="overview">
+        <div v-for="(q, qi) in currentDef.questions" :key="qi" class="overview-row">
+          <div class="overview-header">
+            <span class="question-number">{{ qi + 1 }}</span>
+            <span class="overview-text">{{ q.text || '' }}</span>
+          </div>
+          <div :class="currentDef.defaultAnswers ? 'answers-grid' : 'answers'">
+            <button v-for="(label, ai) in (currentDef.defaultAnswers || q.answers)" :key="ai"
+              class="answer-btn" :class="{selected: allAnswers[currentTestId][qi] === ai}"
+              @click="setAnswer(qi, ai)">
+              {{ label }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <div class="modal-overlay" v-if="showPasswordModal" @click.self="showPasswordModal = false">
+    <div class="modal">
+      <h3>Accès résultats</h3>
+      <p v-if="pwError" class="error">Mot de passe incorrect</p>
+      <input type="password" v-model="password" placeholder="Mot de passe" @keyup.enter="goToResults">
+      <br>
+      <button class="nav-btn next" @click="goToResults" style="width:100%">Accéder</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PASSWORD = "results";
+
+const { createApp } = Vue;
+
+createApp({
+  data() {
+    return {
+      loaded: false,
+      tests: {},
+      testIds: [],
+      currentTestId: "aq",
+      currentIndex: 0,
+      allAnswers: {},
+      overviewMode: false,
+      showPasswordModal: false,
+      password: "",
+      pwError: false,
+    };
+  },
+  computed: {
+    currentDef() { return this.tests[this.currentTestId] || { questions: [], title: '' }; },
+    currentQuestionText() {
+      const q = this.currentDef.questions[this.currentIndex];
+      return q ? q.text : '';
+    },
+    currentAnswers() {
+      const def = this.currentDef;
+      if (def.defaultAnswers) return def.defaultAnswers;
+      const q = def.questions[this.currentIndex];
+      return q ? q.answers : [];
+    },
+    currentAnswer() { return this.allAnswers[this.currentTestId]?.[this.currentIndex] ?? null; },
+    progressPct() {
+      const n = this.currentDef.questions.length;
+      return n ? ((this.currentIndex + 1) / n) * 100 : 0;
+    },
+  },
+  methods: {
+    answeredCount(id) {
+      return (this.allAnswers[id] || []).filter(a => a != null).length;
+    },
+    selectAnswer(ai) {
+      this.allAnswers[this.currentTestId][this.currentIndex] = ai;
+      setTimeout(() => this.nextQuestion(), 250);
+    },
+    setAnswer(qi, ai) {
+      this.allAnswers[this.currentTestId][qi] = ai;
+    },
+    nextQuestion() {
+      if (this.currentIndex < this.currentDef.questions.length - 1) this.currentIndex++;
+    },
+    prevQuestion() {
+      if (this.currentIndex > 0) this.currentIndex--;
+    },
+    switchTest(id) {
+      this.currentTestId = id;
+      // Jump to first unanswered
+      const idx = this.allAnswers[id].findIndex(a => a == null);
+      this.currentIndex = idx === -1 ? 0 : idx;
+    },
+    saveToFile() {
+      const payload = this.testIds.map(id => ({ id, answers: [...this.allAnswers[id]] }));
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'questionnaires_reponses.json';
+      a.click();
+    },
+    triggerLoad() { this.$refs.fileInput.click(); },
+    loadFromFile(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const payload = JSON.parse(ev.target.result);
+          payload.forEach(item => {
+            if (this.allAnswers[item.id]) {
+              const n = this.tests[item.id].questions.length;
+              const arr = new Array(n).fill(null);
+              item.answers.forEach((v, i) => { if (i < n) arr[i] = v; });
+              this.allAnswers[item.id] = arr;
+            }
+          });
+          const idx = this.allAnswers[this.currentTestId].findIndex(a => a == null);
+          this.currentIndex = idx === -1 ? 0 : idx;
+        } catch(err) {
+          alert("Fichier invalide: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    },
+    goToResults() {
+      if (this.password !== PASSWORD) { this.pwError = true; return; }
+      this.showPasswordModal = false;
+      const payload = this.testIds.map(id => ({ id, answers: [...this.allAnswers[id]] }));
+      const encoded = encodeURIComponent(JSON.stringify(payload));
+      window.location.href = 'result.html?data=' + encoded;
+    },
+  },
+  mounted() {
+    this.tests = QUESTIONS;
+    this.testIds = Object.keys(QUESTIONS);
+    this.currentTestId = this.testIds[0];
+    const answers = {};
+    for (const id of this.testIds) {
+      answers[id] = new Array(QUESTIONS[id].questions.length).fill(null);
+    }
+    this.allAnswers = answers;
+    this.loaded = true;
+    window.addEventListener('keydown', (e) => {
+      if (this.showPasswordModal) return;
+      if (e.key === 'ArrowLeft') this.prevQuestion();
+      if (e.key === 'ArrowRight') this.nextQuestion();
+      const num = parseInt(e.key);
+      if (num >= 1 && num <= 9 && num <= this.currentAnswers.length) {
+        this.selectAnswer(num - 1);
+      }
+    });
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

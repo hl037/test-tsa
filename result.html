@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Questionnaires Autisme — Résultats</title>
+<script src="vue.global.prod.js"></script>
+<script src="questions.js"></script>
+<script src="scoring.js"></script>
+<link rel="stylesheet" href="result.css">
+</head>
+<body>
+
+<div id="app">
+  <header class="app-header">
+    <h1>Résultats — Questionnaires Autisme</h1>
+  </header>
+
+  <div class="container">
+    <div v-if="!loaded" class="loading">Chargement…</div>
+
+    <template v-else>
+      <div class="toolbar">
+        <button class="tool-btn" @click="saveToFile" v-if="hasData">&#128190; Sauvegarder</button>
+        <button class="tool-btn" @click="triggerLoad">&#128194; Charger un fichier</button>
+        <input type="file" ref="fileInput" class="hidden" accept=".json" @change="loadFromFile">
+        <button class="tool-btn" :class="{active: showScores}" @click="showScores = !showScores">
+          &#128065; {{ showScores ? 'Masquer' : 'Afficher' }} les points
+        </button>
+        <span class="spacer"></span>
+        <button class="tool-btn" @click="doPrint">&#128424; Imprimer</button>
+      </div>
+
+      <template v-if="hasData">
+        <!-- Score summary cards -->
+        <div class="summary">
+          <div class="score-card" v-for="tid in testIds" :key="tid" @click="scrollTo(tid)" style="cursor:pointer">
+            <div class="label">{{ questions[tid].shortName }}</div>
+            <div class="value">{{ score(tid).score }}</div>
+            <div class="max">/ {{ score(tid).max }}</div>
+            <div class="bar">
+              <div class="bar-fill" :style="{width: score(tid).pct + '%', background: rangeFor(tid).color}"></div>
+            </div>
+            <div class="range-label" :style="{background: rangeFor(tid).color + '20', color: rangeFor(tid).color}">
+              {{ rangeFor(tid).label }}
+            </div>
+            <button v-if="hasToggle(tid)" class="mode-toggle" @click.prevent.stop="toggleMode(tid)">
+              {{ isWeighted(tid) ? 'Fort=2×Faible' : 'Fort=Faible' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Norms -->
+        <div class="norms-section">
+          <h2>Normes et repères</h2>
+          <div class="norms-grid">
+            <div class="norm-card" v-for="tid in testIds" :key="'n-' + tid">
+              <h3>
+                {{ questions[tid].shortName }}
+                <span v-if="hasToggle(tid)" style="font-size:0.7rem;color:var(--text-muted);font-weight:600">
+                  — {{ isWeighted(tid) ? 'Fort=2×Faible' : 'Fort=Faible' }}
+                </span>
+                (max {{ currentNorm(tid).max }})
+              </h3>
+              <div class="norm-ranges">
+                <div class="norm-range" v-for="r in currentNorm(tid).ranges" :key="r.label">
+                  <span class="norm-color" :style="{background: r.color}"></span>
+                  <span>{{ r.min }}–{{ r.max }} : {{ r.label }}</span>
+                </div>
+              </div>
+              <div class="norm-refs">
+                <div v-for="ref in currentNorm(tid).refs" :key="ref.label">
+                  <span class="norm-ref-marker">▸</span> {{ ref.label }} : <strong>{{ ref.value }}</strong>
+                </div>
+              </div>
+              <div v-if="normSource(tid)" class="norm-source">
+                <a v-if="normSourceUrl(tid)" :href="normSourceUrl(tid)" target="_blank">{{ normSource(tid) }}</a>
+                <span v-else>{{ normSource(tid) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Detail per test -->
+        <div v-for="tid in testIds" :key="'s-' + tid" class="section" :id="'section-' + tid">
+          <h2>
+            {{ questions[tid].title }} — {{ score(tid).score }}/{{ score(tid).max }}
+            <span v-if="hasToggle(tid)" class="mode-label">
+              ({{ isWeighted(tid) ? 'Fort=2×Faible' : 'Fort=Faible' }})
+            </span>
+          </h2>
+          <div v-for="(q, qi) in questions[tid].questions" :key="qi" class="q-row">
+            <div class="q-header">
+              <span class="q-num">{{ qi + 1 }}</span>
+              <span class="q-text">{{ q.text || '—' }}</span>
+            </div>
+            <div class="q-answers">
+              <span v-for="(label, ai) in getAnswerLabels(tid, qi)" :key="ai"
+                class="q-ans"
+                :class="{selected: answersFor(tid)?.[qi] === ai, unanswered: answersFor(tid)?.[qi] == null && ai === 0 && getAnswerLabels(tid, qi).length === 1}"
+              >
+                {{ label }}
+                <span v-if="showScores" class="pts">({{ scoreMatrix(tid)[qi]?.[ai] ?? 0 }})</span>
+              </span>
+              <span v-if="answersFor(tid)?.[qi] == null" class="q-ans unanswered">Non répondu</span>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <div v-else class="section">
+        <div class="no-data">
+          Aucune donnée trouvée.<br>
+          Chargez un fichier de réponses ou passez par la page de test.
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+createApp({
+  data() {
+    return {
+      loaded: false,
+      questions: {},
+      scoring: {},
+      testIds: [],
+      rawData: null,
+      showScores: false,
+      weightedModes: {},  // per-test: { 'aq': true, 'eq': true, ... }
+    };
+  },
+  computed: {
+    hasData() { return this.rawData != null; },
+  },
+  methods: {
+    answersFor(tid) {
+      if (!this.rawData) return null;
+      const found = this.rawData.find(d => d.id === tid);
+      return found ? found.answers : null;
+    },
+    scoreMatrix(tid) {
+      const weighted = this.weightedModes[tid] !== false; // default true
+      const mode = weighted ? 'weighted' : 'unweighted';
+      const m = this.scoring[tid]?.[mode];
+      return m || this.scoring[tid]?.weighted || [];
+    },
+    score(tid) {
+      const answers = this.answersFor(tid);
+      const matrix = this.scoreMatrix(tid);
+      if (!answers || !matrix.length) return { score: 0, max: 0, pct: 0 };
+      let score = 0, max = 0, answered = 0;
+      for (let i = 0; i < matrix.length; i++) {
+        const row = matrix[i];
+        max += Math.max(...row);
+        if (answers[i] != null) {
+          answered++;
+          score += row[answers[i]] ?? 0;
+        }
+      }
+      return { score, max, pct: max > 0 ? Math.round(score / max * 100) : 0, answered, total: matrix.length };
+    },
+    currentNorm(tid) {
+      const weighted = this.weightedModes[tid] !== false;
+      const mode = weighted ? 'weighted' : 'unweighted';
+      const n = this.scoring.norms?.[tid]?.[mode];
+      return n || this.scoring.norms?.[tid]?.weighted || { max: 0, ranges: [], refs: [] };
+    },
+    rangeFor(tid) {
+      const s = this.score(tid).score;
+      const norm = this.currentNorm(tid);
+      for (const r of norm.ranges || []) {
+        if (s >= r.min && s <= r.max) return r;
+      }
+      return { label: '—', color: '#8fa89c' };
+    },
+    getAnswerLabels(tid, qi) {
+      const def = this.questions[tid];
+      if (def.defaultAnswers) return def.defaultAnswers;
+      return def.questions[qi]?.answers || [];
+    },
+    hasToggle(tid) {
+      return this.scoring.norms?.[tid]?.hasWeightedToggle === true;
+    },
+    isWeighted(tid) {
+      return this.weightedModes[tid] !== false;
+    },
+    toggleMode(tid) {
+      this.weightedModes[tid] = !this.isWeighted(tid);
+    },
+    normSource(tid) {
+      return this.scoring.norms?.[tid]?.source || '';
+    },
+    normSourceUrl(tid) {
+      return this.scoring.norms?.[tid]?.sourceUrl || '';
+    },
+    doPrint() { window.print(); },
+    saveToFile() {
+      if (!this.rawData) return;
+      const blob = new Blob([JSON.stringify(this.rawData, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'questionnaires_reponses.json';
+      a.click();
+    },
+    scrollTo(tid) {
+      const el = document.getElementById('section-' + tid);
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    },
+    triggerLoad() { this.$refs.fileInput.click(); },
+    loadFromFile(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try { this.rawData = JSON.parse(ev.target.result); }
+        catch(err) { alert("Fichier invalide: " + err.message); }
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    },
+  },
+  mounted() {
+    this.questions = QUESTIONS;
+    this.scoring = SCORING;
+    this.testIds = Object.keys(QUESTIONS);
+    const modes = {};
+    for (const tid of this.testIds) modes[tid] = true;
+    this.weightedModes = modes;
+    this.loaded = true;
+    const params = new URLSearchParams(window.location.search);
+    const d = params.get('data');
+    if (d) {
+      try { this.rawData = JSON.parse(d); }
+      catch(e) { console.error('Invalid data param', e); }
+    }
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
